@@ -8,19 +8,6 @@ use std::error::Error;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct Eindex(usize);
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum Eptr { Index(Eindex), Null }
-
-impl Eptr {
-    fn is_null(&self) -> bool {
-        match self {
-            Eptr::Null => true,
-            _ => false,
-        }
-    }
-    fn is_valid(&self) -> bool { !self.is_null() }
-}
-
 // `Entry`s are a type alias for tuples of (row, col, val).
 type Entry = (usize, usize, f64);
 
@@ -76,8 +63,8 @@ struct Element {
     val: f64,
     fillin: bool,
     orig: (usize, usize, f64),
-    next_in_row: Eptr,
-    next_in_col: Eptr,
+    next_in_row: Option<Eindex>,
+    next_in_col: Option<Eindex>,
 }
 
 impl PartialEq for Element {
@@ -97,8 +84,8 @@ impl Element {
             val,
             fillin,
             orig: (row, col, val),
-            next_in_row: Eptr::Null,
-            next_in_col: Eptr::Null,
+            next_in_row: None,
+            next_in_col: None,
         }
     }
     fn loc(&self, ax: Axis) -> usize {
@@ -113,13 +100,13 @@ impl Element {
             Axis::COLS => self.col = to,
         }
     }
-    fn next(&self, ax: Axis) -> Eptr {
+    fn next(&self, ax: Axis) -> Option<Eindex> {
         match ax {
             Axis::ROWS => self.next_in_row,
             Axis::COLS => self.next_in_col,
         }
     }
-    fn set_next(&mut self, ax: Axis, e: Eptr) {
+    fn set_next(&mut self, ax: Axis, e: Option<Eindex>) {
         match ax {
             Axis::ROWS => self.next_in_row = e,
             Axis::COLS => self.next_in_col = e,
@@ -154,7 +141,7 @@ impl AxisMapping {
 
 struct AxisData {
     ax: Axis,
-    hdrs: Vec<Eptr>,
+    hdrs: Vec<Option<Eindex>>,
     qtys: Vec<usize>,
     markowitz: Vec<usize>,
     mapping: Option<AxisMapping>,
@@ -174,7 +161,7 @@ impl AxisData {
         if to <= self.hdrs.len() { return; }
         let by = to - self.hdrs.len();
         for _ in 0..by {
-            self.hdrs.push(Eptr::Null);
+            self.hdrs.push(None);
             self.qtys.push(0);
             self.markowitz.push(0);
         }
@@ -199,7 +186,7 @@ pub struct Matrix {
     state: MatrixState,
     elements: Vec<Element>,
     axes: AxisPair<AxisData>,
-    diag: Vec<Eptr>,
+    diag: Vec<Option<Eindex>>,
     fillins: Vec<Eindex>,
 }
 
@@ -227,9 +214,7 @@ impl Matrix {
 
     pub fn identity(n: usize) -> Matrix {
         let mut m = Matrix::new();
-        for k in 0..n {
-            m.add_element(k, k, 1.0);
-        }
+        for k in 0..n { m.add_element(k, k, 1.0); }
         return m;
     }
 
@@ -252,7 +237,7 @@ impl Matrix {
         if expanded {
             let new_diag_len = std::cmp::min(self.num_rows(), self.num_cols());
             for _ in 0..new_diag_len - self.diag.len() {
-                self.diag.push(Eptr::Null);
+                self.diag.push(None);
             }
         }
 
@@ -269,7 +254,7 @@ impl Matrix {
         }
 
         // Update our special arrays
-        if e.row == e.col { self.diag[e.row] = Eptr::Index(e.index); }
+        if e.row == e.col { self.diag[e.row] = Some(e.index); }
         if e.fillin { self.fillins.push(e.index); }
     }
 
@@ -277,34 +262,29 @@ impl Matrix {
         // Insert Element `e` along Axis `ax`
 
         let head_ptr = self.axes[ax].hdrs[e.loc(ax)];
-        // if head_ptr.is_null() { // Adding first element in this row/col
-        //     return self.set_hdr(ax, e.loc(ax), Eptr::Index(e.index));
-        // }
-        // let Eptr::Index(head_idx) = head_ptr;
-
         let head_idx = match head_ptr {
-            Eptr::Index(h) => h,
-            Eptr::Null => {
+            Some(h) => h,
+            None => {
                 // Adding first element in this row/col
-                return self.set_hdr(ax, e.loc(ax), Eptr::Index(e.index));
+                return self.set_hdr(ax, e.loc(ax), Some(e.index));
             }
         };
         let off_ax = ax.other();
         if self[head_idx].loc(off_ax) > e.loc(off_ax) {
             // `e` is the new first element
             e.set_next(ax, head_ptr);
-            return self.set_hdr(ax, e.loc(ax), Eptr::Index(e.index));
+            return self.set_hdr(ax, e.loc(ax), Some(e.index));
         }
 
         // `e` comes after at least one Element.  Search for its position.
         let mut prev = head_idx;
-        while let Eptr::Index(nxt) = self[prev].next(ax) {
-            if self[nxt].loc(off_ax) >= e.loc(off_ax) { break; }
-            prev = nxt;
+        while let Some(next) = self[prev].next(ax) {
+            if self[next].loc(off_ax) >= e.loc(off_ax) { break; }
+            prev = next;
         }
         // And splice it in-between `prev` and `nxt`
         e.set_next(ax, self[prev].next(ax));
-        self[prev].set_next(ax, Eptr::Index(e.index));
+        self[prev].set_next(ax, Some(e.index));
     }
 
     pub fn add_element(&mut self, row: usize, col: usize, val: f64) {
@@ -324,24 +304,24 @@ impl Matrix {
         return index;
     }
 
-    fn hdr(&self, ax: Axis, loc: usize) -> Eptr { self.axes[ax].hdrs[loc] }
-    fn set_hdr(&mut self, ax: Axis, loc: usize, ei: Eptr) { self.axes[ax].hdrs[loc] = ei; }
+    fn hdr(&self, ax: Axis, loc: usize) -> Option<Eindex> { self.axes[ax].hdrs[loc] }
+    fn set_hdr(&mut self, ax: Axis, loc: usize, ei: Option<Eindex>) { self.axes[ax].hdrs[loc] = ei; }
 
     fn get_hdr_option(&self, ax: Axis, index: usize) -> Option<f64> {
         if index >= self.axes[ax].hdrs.len() { return None; }
 
         let hdr_ptr = self.axes[ax].hdrs[index];
         return match hdr_ptr {
-            Eptr::Null => None,
-            Eptr::Index(ei) => Some(self[ei].val),
+            None => None,
+            Some(ei) => Some(self[ei].val),
         };
     }
 
     fn num_rows(&self) -> usize {
-        self.axes[Axis::ROWS].hdrs.len()
+        self.axes[ROWS].hdrs.len()
     }
     fn num_cols(&self) -> usize {
-        self.axes[Axis::COLS].hdrs.len()
+        self.axes[COLS].hdrs.len()
     }
     fn size(&self) -> (usize, usize) {
         (self.num_rows(), self.num_cols())
@@ -355,13 +335,13 @@ impl Matrix {
 
         if row == col { // On diagonal; easy access
             return match self.diag[row] {
-                Eptr::Null => None,
-                Eptr::Index(d) => Some(self[d].val),
+                None => None,
+                Some(d) => Some(self[d].val),
             };
         }
 
         let mut ep = self.hdr(ROWS, row);
-        while let Eptr::Index(ei) = ep {
+        while let Some(ei) = ep {
             let e = &self[ei];
             if e.col == col { return Some(e.val); } else if e.col > col { return None; }
             ep = e.next_in_row;
@@ -399,40 +379,40 @@ impl Matrix {
         let y = self.eindex(idx).loc(off_ax);
 
         if loc < to {
-            let br = match self.before_loc(off_ax, y, to, Eptr::Index(idx)) {
-                Eptr::Index(ei) => ei,
-                Eptr::Null => panic!("ERROR"),
+            let br = match self.before_loc(off_ax, y, to, Some(idx)) {
+                Some(ei) => ei,
+                None => panic!("ERROR"),
             };
             if br != idx {
-                let be = self.prev(off_ax, idx, Eptr::Null);
+                let be = self.prev(off_ax, idx, None);
                 let nxt = self.next(off_ax, idx);
                 match be {
-                    Eptr::Null => self.set_hdr(off_ax, y, nxt),
-                    Eptr::Index(be) => self[be].set_next(off_ax, nxt),
+                    None => self.set_hdr(off_ax, y, nxt),
+                    Some(be) => self[be].set_next(off_ax, nxt),
                 };
                 self.set_next(off_ax, idx, self.next(off_ax, br));
-                self.set_next(off_ax, br, Eptr::Index(idx));
+                self.set_next(off_ax, br, Some(idx));
             }
         } else {
-            let br = self.before_loc(off_ax, y, to, Eptr::Null);
-            let be = self.prev(off_ax, idx, Eptr::Null);
+            let br = self.before_loc(off_ax, y, to, None);
+            let be = self.prev(off_ax, idx, None);
 
             if br != be { // We (may) need some pointer updates
-                if let Eptr::Index(ei) = be {
+                if let Some(ei) = be {
                     let nxt = self.next(off_ax, idx);
                     self[ei].set_next(off_ax, nxt);
                 }
                 match br {
-                    Eptr::Null => { // New first in row/col
+                    None => { // New first in row/col
                         let first = self.hdr(off_ax, y);
                         self[idx].set_next(off_ax, first);
-                        self.axes[off_ax].hdrs[y] = Eptr::Index(idx);
+                        self.axes[off_ax].hdrs[y] = Some(idx);
                     }
-                    Eptr::Index(br) => {
+                    Some(br) => {
                         if br != idx { // Splice `idx` in after `br`
                             let nxt = self.next(off_ax, br);
                             self[idx].set_next(off_ax, nxt);
-                            self[br].set_next(off_ax, Eptr::Index(idx));
+                            self[br].set_next(off_ax, Some(idx));
                         }
                     }
                 };
@@ -443,9 +423,9 @@ impl Matrix {
         self[idx].set_loc(ax, to);
 
         if loc == y { // If idx was on our diagonal, remove it
-            self.diag[loc] = Eptr::Null;
+            self.diag[loc] = None;
         } else if to == y { // Or if it's now on the diagonal, add it
-            self.diag[to] = Eptr::Index(idx);
+            self.diag[to] = Some(idx);
         }
     }
     fn exchange_elements(&mut self, ax: Axis, ix: Eindex, iy: Eindex) {
@@ -457,10 +437,10 @@ impl Matrix {
         let off_ax = ax.other();
         let off_loc = self.eindex(ix).loc(off_ax);
 
-        let bx = self.prev(off_ax, ix, Eptr::Null);
-        let by = match self.prev(off_ax, iy, Eptr::Index(ix)) {
-            Eptr::Index(e) => e,
-            Eptr::Null => panic!("ERROR!"),
+        let bx = self.prev(off_ax, ix, None);
+        let by = match self.prev(off_ax, iy, Some(ix)) {
+            Some(e) => e,
+            None => panic!("ERROR!"),
         };
 
         let locx = self.eindex(ix).loc(ax);
@@ -469,70 +449,70 @@ impl Matrix {
         self[ix].set_loc(ax, locy);
 
         match bx {
-            Eptr::Null => {
+            None => {
                 // If `ex` is the *first* entry in the column, replace it to our header-list
-                self.set_hdr(off_ax, off_loc, Eptr::Index(iy));
+                self.set_hdr(off_ax, off_loc, Some(iy));
             }
-            Eptr::Index(bxe) => {
+            Some(bxe) => {
                 // Otherwise patch ey into bx
-                self[bxe].set_next(off_ax, Eptr::Index(iy));
+                self[bxe].set_next(off_ax, Some(iy));
             }
         }
 
         if by == ix { // `ex` and `ey` are adjacent
             let tmp = self[iy].next(off_ax);
-            self[iy].set_next(off_ax, Eptr::Index(ix));
+            self[iy].set_next(off_ax, Some(ix));
             self[ix].set_next(off_ax, tmp);
         } else { // Elements in-between `ex` and `ey`.  Update the last one.
             let xnxt = self.eindex(ix).next(off_ax);
             let ynxt = self.eindex(iy).next(off_ax);
             self[iy].set_next(off_ax, xnxt);
             self[ix].set_next(off_ax, ynxt);
-            self[by].set_next(off_ax, Eptr::Index(ix));
+            self[by].set_next(off_ax, Some(ix));
         }
 
         // Update our diagonal array, if necessary
         if locx == off_loc {
-            self.diag[off_loc] = Eptr::Index(iy);
+            self.diag[off_loc] = Some(iy);
         } else if locy == off_loc {
-            self.diag[off_loc] = Eptr::Index(ix);
+            self.diag[off_loc] = Some(ix);
         }
     }
 
-    fn prev(&self, ax: Axis, idx: Eindex, hint: Eptr) -> Eptr {
+    fn prev(&self, ax: Axis, idx: Eindex, hint: Option<Eindex>) -> Option<Eindex> {
         // Find the element previous to `idx` along axis `ax`. 
         // If provided, `hint` *must* be before `idx`, or search will fail. 
-        let prev: Eptr = match hint {
-            Eptr::Index(_) => hint,
-            Eptr::Null => self.hdr(ax, self[idx].loc(ax)),
+        let prev: Option<Eindex> = match hint {
+            Some(_) => hint,
+            None => self.hdr(ax, self[idx].loc(ax)),
         };
         let mut pi: Eindex = match prev {
-            Eptr::Null => { return Eptr::Null; }
-            Eptr::Index(pi) if pi == idx => { return Eptr::Null; }
-            Eptr::Index(pi) => pi,
+            None => { return None; }
+            Some(pi) if pi == idx => { return None; }
+            Some(pi) => pi,
         };
-        while let Eptr::Index(nxt) = self[pi].next(ax) {
+        while let Some(nxt) = self[pi].next(ax) {
             if nxt == idx { break; }
             pi = nxt;
         }
-        return Eptr::Index(pi);
+        return Some(pi);
     }
-    fn before_loc(&self, ax: Axis, loc: usize, before: usize, hint: Eptr) -> Eptr {
-        let prev: Eptr = match hint {
-            Eptr::Index(_) => hint,
-            Eptr::Null => self.hdr(ax, loc),
+    fn before_loc(&self, ax: Axis, loc: usize, before: usize, hint: Option<Eindex>) -> Option<Eindex> {
+        let prev: Option<Eindex> = match hint {
+            Some(_) => hint,
+            None => self.hdr(ax, loc),
         };
         let off_ax = ax.other();
         let mut pi: Eindex = match prev {
-            Eptr::Null => { return Eptr::Null; }
-            Eptr::Index(pi) if self[pi].loc(off_ax) >= before => { return Eptr::Null; }
-            Eptr::Index(pi) => pi,
+            None => { return None; }
+            Some(pi) if self[pi].loc(off_ax) >= before => { return None; }
+            Some(pi) => pi,
         };
-        while let Eptr::Index(nxt) = self[pi].next(ax) {
+        while let Some(nxt) = self[pi].next(ax) {
             if self[nxt].loc(off_ax) >= before { break; }
             pi = nxt;
         }
-        return Eptr::Index(pi);
+        return Some(pi);
     }
 
     fn swap(&mut self, ax: Axis, a: usize, b: usize) {
@@ -547,7 +527,7 @@ impl Matrix {
 
         loop {
             match (ix, iy) {
-                (Eptr::Index(ex), Eptr::Index(ey)) => {
+                (Some(ex), Some(ey)) => {
                     let ox = self.eindex(ex).loc(off_ax);
                     let oy = self.eindex(ey).loc(off_ax);
                     if ox < oy {
@@ -562,15 +542,15 @@ impl Matrix {
                         iy = self[ey].next(ax);
                     }
                 }
-                (Eptr::Null, Eptr::Index(ey)) => {
+                (None, Some(ey)) => {
                     self.move_element(ax, ey, x);
                     iy = self[ey].next(ax);
                 }
-                (Eptr::Index(ex), Eptr::Null) => {
+                (Some(ex), None) => {
                     self.move_element(ax, ex, y);
                     ix = self[ex].next(ax);
                 }
-                (Eptr::Null, Eptr::Null) => { break; }
+                (None, None) => { break; }
             }
         }
         // Swap all the relevant pointers & counters
@@ -588,23 +568,22 @@ impl Matrix {
 
         for n in 0..self.diag.len() - 1 {
             let pivot = match self.search_for_pivot(n) {
-                Eptr::Null => panic!("SAD!"), // FIXME: return result-like
-                Eptr::Index(p) => p,
+                None => panic!("SAD!"), // FIXME: return result-like
+                Some(p) => p,
             };
-            // assert(pivot).ne(Eptr::Null);
+            // assert(pivot).ne(None);
             self.swap(ROWS, self[pivot].row, n);
             self.swap(COLS, self[pivot].col, n);
             self.row_col_elim(pivot, n);
         }
-
         self.set_state(MatrixState::FACTORED);
     }
 
-    fn search_for_pivot(&self, n: usize) -> Eptr {
+    fn search_for_pivot(&self, n: usize) -> Option<Eindex> {
         let mut ei = self.markowitz_search_diagonal(n);
-        if ei.is_valid() { return ei; }
+        if let Some(_) = ei { return ei; }
         ei = self.markowitz_search_submatrix(n);
-        if ei.is_valid() { return ei; }
+        if let Some(_) = ei { return ei; }
         return self.find_max(n);
     }
 
@@ -613,7 +592,7 @@ impl Matrix {
         let mut best_val = self[after].val.abs();
         let mut e = self[after].next(ax);
 
-        while let Eptr::Index(ei) = e {
+        while let Some(ei) = e {
             let val = self[ei].val.abs();
             if val > best_val {
                 best = ei;
@@ -625,7 +604,6 @@ impl Matrix {
     }
 
     fn markowitz_product(&self, ei: Eindex) -> usize {
-        // assert!(ei.is_valid());
         let e = &self[ei];
         let mr = self[Axis::ROWS].markowitz[e.row];
         let mc = self[Axis::COLS].markowitz[e.col];
@@ -634,20 +612,20 @@ impl Matrix {
         return (mr - 1) * (mc - 1);
     }
 
-    fn markowitz_search_diagonal(&self, n: usize) -> Eptr {
+    fn markowitz_search_diagonal(&self, n: usize) -> Option<Eindex> {
         let REL_THRESHOLD = 1e-3;
         let ABS_THRESHOLD = 0.0;
         let TIES_MULT = 5;
 
-        let mut best_elem = Eptr::Null;
+        let mut best_elem = None;
         let mut best_mark = MAX; // Actually use usize::MAX!
         let mut best_ratio = 0.0;
         let mut num_ties = 0;
 
         for k in n..self.diag.len() {
             let d = match self.diag[k] {
-                Eptr::Null => { continue; }
-                Eptr::Index(d) => d,
+                None => { continue; }
+                Some(d) => d,
             };
 
             // Check whether this element meets our threshold criteria
@@ -676,12 +654,12 @@ impl Matrix {
         return best_elem;
     }
 
-    fn markowitz_search_submatrix(&self, n: usize) -> Eptr {
+    fn markowitz_search_submatrix(&self, n: usize) -> Option<Eindex> {
         let REL_THRESHOLD = 1e-3;
         let ABS_THRESHOLD = 0.0;
         let TIES_MULT = 5;
 
-        let mut best_elem = Eptr::Null;
+        let mut best_elem = None;
         let mut best_mark = MAX; // Actually use usize::MAX!
         let mut best_ratio = 0.0;
         let mut num_ties = 0;
@@ -689,20 +667,20 @@ impl Matrix {
         for k in n..self.axes[COLS].hdrs.len() {
             let mut e = self.hdr(COLS, n);
             // Advance to a row ≥ n
-            while let Eptr::Index(ei) = e {
+            while let Some(ei) = e {
                 if self[ei].row >= n { break; }
                 e = self[ei].next_in_col;
             }
             let ei = match e {
-                Eptr::Null => { continue; }
-                Eptr::Index(d) => d,
+                None => { continue; }
+                Some(d) => d,
             };
 
             // Check whether this element meets our threshold criteria
             let max_in_col = self.max_after(Axis::COLS, ei);
             let threshold = REL_THRESHOLD * self[max_in_col].val.abs() + ABS_THRESHOLD;
 
-            while let Eptr::Index(ei) = e {
+            while let Some(ei) = e {
                 // If so, compute and compare its Markowitz product to our best
                 let mark = self.markowitz_product(ei);
                 if mark < best_mark {
@@ -727,9 +705,9 @@ impl Matrix {
         return best_elem;
     }
 
-    fn find_max(&self, n: usize) -> Eptr {
+    fn find_max(&self, n: usize) -> Option<Eindex> {
         // Find the max (abs value) element in sub-matrix of indices ≥ `n`.
-        let mut max_elem = Eptr::Null;
+        let mut max_elem = None;
         let mut max_val = 0.0;
 
         // Search each column ≥ n
@@ -737,12 +715,12 @@ impl Matrix {
             let mut e = self.hdr(COLS, k);
 
             // Advance to a row ≥ n
-            while let Eptr::Index(ei) = e {
+            while let Some(ei) = e {
                 if self[ei].row >= n { break; }
                 e = self[ei].next_in_col;
             }
             // And search over remaining elements
-            while let Eptr::Index(ei) = e {
+            while let Some(ei) = e {
                 let val = self[ei].val.abs();
                 if val > max_val {
                     max_elem = e;
@@ -756,37 +734,37 @@ impl Matrix {
 
     fn row_col_elim(&mut self, pivot: Eindex, n: usize) {
         let de = match self.diag[n] {
-            Eptr::Index(de) => de,
-            Eptr::Null => panic!("FAIL!"),
+            Some(de) => de,
+            None => panic!("FAIL!"),
         };
         let pivot_val = self.eindex(pivot).val;
         assert(pivot_val).ne(0.0);
 
         // Divide elements in the pivot column by the pivot-value
         let mut plower = self.eindex(pivot).next_in_col;
-        while let Eptr::Index(ple) = plower {
+        while let Some(ple) = plower {
             self[ple].val /= pivot_val;
             plower = self[ple].next_in_col;
         }
 
         let mut pupper = self[pivot].next_in_row;
-        while let Eptr::Index(pue) = pupper {
+        while let Some(pue) = pupper {
             let pupper_col = self.eindex(pue).col;
             plower = self.eindex(pivot).next_in_col;
             let mut psub = self.eindex(pue).next_in_col;
-            while let Eptr::Index(ple) = plower {
+            while let Some(ple) = plower {
 
                 // Walk `psub` down to the lower pointer
-                while let Eptr::Index(pse) = psub {
+                while let Some(pse) = psub {
                     if self.eindex(pse).row >= self.eindex(ple).row { break; }
                     psub = self.eindex(pse).next_in_col;
                 }
                 let pse = match psub {
-                    Eptr::Null => self.add_fillin(self.eindex(ple).row, pupper_col),
-                    Eptr::Index(pse) if self[pse].row > self[ple].row => {
+                    None => self.add_fillin(self.eindex(ple).row, pupper_col),
+                    Some(pse) if self[pse].row > self[ple].row => {
                         self.add_fillin(self.eindex(ple).row, pupper_col)
                     }
-                    Eptr::Index(pse) => pse,
+                    Some(pse) => pse,
                 };
 
                 // Update the `psub` element value
@@ -798,10 +776,10 @@ impl Matrix {
             pupper = self.eindex(pue).next_in_row;
         }
         // Update remaining Markowitz counts
-        self.axes[Axis::ROWS].markowitz[n] -= 1;
-        self.axes[Axis::COLS].markowitz[n] -= 1;
+        self.axes[ROWS].markowitz[n] -= 1;
+        self.axes[COLS].markowitz[n] -= 1;
         plower = self.eindex(pivot).next_in_col;
-        while let Eptr::Index(ple) = plower {
+        while let Some(ple) = plower {
             let plower_row = self.eindex(ple).row;
             self.axes[ROWS].markowitz[plower_row] -= 1;
             plower = self.eindex(ple).next_in_col;
@@ -826,11 +804,11 @@ impl Matrix {
             // c[d.row] /= d.val
 
             let mut di = match self.diag[k] {
-                Eptr::Index(di) => di,
-                Eptr::Null => panic!("FAIL!"),
+                Some(di) => di,
+                None => panic!("FAIL!"),
             };
             let mut e = self[di].next_in_col;
-            while let Eptr::Index(ei) = e {
+            while let Some(ei) = e {
                 c[self[ei].row] -= c[k] * self[ei].val;
                 e = self[ei].next_in_col;
             }
@@ -840,11 +818,11 @@ impl Matrix {
         for k in (0..self.diag.len()).rev() {
             // Walk each row, update c
             let mut di = match self.diag[k] {
-                Eptr::Index(di) => di,
-                Eptr::Null => panic!("FAIL!"),
+                Some(di) => di,
+                None => panic!("FAIL!"),
             };
             let mut e = self[di].next_in_row;
-            while let Eptr::Index(ei) = e {
+            while let Some(ei) = e {
                 c[k] -= c[self[ei].col] * self[ei].val;
                 e = self[ei].next_in_row;
             }
@@ -860,8 +838,8 @@ impl Matrix {
     }
 
     fn eindex(&self, idx: Eindex) -> &Element { &self[idx] }
-    fn next(&self, ax: Axis, idx: Eindex) -> Eptr { self[idx].next(ax) }
-    fn set_next(&mut self, ax: Axis, idx: Eindex, to: Eptr) { self[idx].set_next(ax, to) }
+    fn next(&self, ax: Axis, idx: Eindex) -> Option<Eindex> { self[idx].next(ax) }
+    fn set_next(&mut self, ax: Axis, idx: Eindex, to: Option<Eindex>) { self[idx].set_next(ax, to) }
 
     fn swap_rows(&mut self, x: usize, y: usize) { self.swap(Axis::ROWS, x, y) }
     fn swap_cols(&mut self, x: usize, y: usize) { self.swap(Axis::COLS, x, y) }
@@ -1026,17 +1004,17 @@ mod tests {
 
         for n in 0..m.axes[COLS].hdrs.len() {
             let mut ep = m.hdr(COLS, n);
-            while let Eptr::Index(ei) = ep {
+            while let Some(ei) = ep {
                 assert(m.eindex(ei).col).eq(n);
 
                 // let mut nxt = m.eindex(ei).next_in_col;
-                if let Eptr::Index(nxt) = m[ei].next_in_col {
+                if let Some(nxt) = m[ei].next_in_col {
                     assert(m.eindex(nxt).row).gt(m.eindex(ei).row);
                     assert!(!next_in_cols.contains(&nxt));
                     next_in_cols.push(nxt);
                 }
                 // nxt = m.eindex(ei).next_in_row;
-                if let Eptr::Index(nxt) = m[ei].next_in_row {
+                if let Some(nxt) = m[ei].next_in_row {
                     assert(m.eindex(nxt).col).gt(m.eindex(ei).col);
                     assert!(!next_in_rows.contains(&nxt));
                     next_in_rows.push(nxt);
@@ -1047,13 +1025,13 @@ mod tests {
 
         // Add the row/column headers to the "next" vectors
         for ep in m.axes[Axis::COLS].hdrs.iter() {
-            if let Eptr::Index(ei) = ep {
+            if let Some(ei) = ep {
                 assert!(!next_in_cols.contains(ei));
                 next_in_cols.push(*ei);
             }
         }
         for ep in m.axes[Axis::ROWS].hdrs.iter() {
-            if let Eptr::Index(ei) = ep {
+            if let Some(ei) = ep {
                 assert!(!next_in_rows.contains(ei));
                 next_in_rows.push(*ei);
             }
@@ -1073,7 +1051,7 @@ mod tests {
             let eo = m.get(r, r);
             match eo {
                 Some(e) => {
-                    if let Eptr::Index(d) = m.diag[r] {
+                    if let Some(d) = m.diag[r] {
                         assert(m[d].val).eq(e);
                     } else { panic!("FAIL!"); }
                     // FIXME: would prefer something like the previous "same element ID" testing
@@ -1082,7 +1060,7 @@ mod tests {
 //                    assert_eq!(e.row, r);
 //                    assert_eq!(e.col, r);
                 }
-                None => assert_eq!(m.diag[r], Eptr::Null),
+                None => assert_eq!(m.diag[r], None),
             }
         }
     }
@@ -1095,8 +1073,8 @@ mod tests {
         assert_eq!(e.col, 0);
         assert_eq!(e.val, 1.0);
         assert_eq!(e.fillin, false);
-        assert_eq!(e.next_in_row, Eptr::Null);
-        assert_eq!(e.next_in_col, Eptr::Null);
+        assert_eq!(e.next_in_row, None);
+        assert_eq!(e.next_in_col, None);
     }
 
     #[test]
