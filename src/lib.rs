@@ -1,3 +1,9 @@
+#![crate_name = "sparse21"]
+/// Sparse21
+///
+/// Solving large systems of linear equations using sparse matrix methods.
+///
+
 use std::fmt;
 use std::usize::MAX;
 use std::cmp::{min, max};
@@ -16,7 +22,6 @@ type Entry = (usize, usize, f64);
 enum Axis { ROWS = 0, COLS }
 
 use Axis::*;
-
 
 impl Axis {
     fn other(&self) -> Axis {
@@ -180,6 +185,9 @@ impl AxisData {
     }
 }
 
+type SpResult<T> = Result<T, &'static str>;
+
+/// Sparse Matrix
 pub struct Matrix {
     // Matrix.elements is the owner of all `Element`s.
     // Everything else gets referenced via `Eindex`es.
@@ -191,6 +199,7 @@ pub struct Matrix {
 }
 
 impl Matrix {
+    /// Create a new, initially empty `Matrix`
     pub fn new() -> Matrix {
         Matrix {
             state: MatrixState::CREATED,
@@ -203,7 +212,6 @@ impl Matrix {
             fillins: vec![],
         }
     }
-
     pub fn from_entries(entries: Vec<Entry>) -> Matrix {
         let mut m = Matrix::new();
         for e in entries.iter() {
@@ -211,13 +219,12 @@ impl Matrix {
         }
         return m;
     }
-
+    /// Returns the n*n identity `Matrix`
     pub fn identity(n: usize) -> Matrix {
         let mut m = Matrix::new();
         for k in 0..n { m.add_element(k, k, 1.0); }
         return m;
     }
-
     pub fn add_elements(&mut self, elements: Vec<Entry>) {
         for e in elements.iter() {
             self.add_element(e.0, e.1, e.2);
@@ -371,7 +378,6 @@ impl Matrix {
             }
         }
     }
-
     fn move_element(&mut self, ax: Axis, idx: Eindex, to: usize) {
         let loc = self[idx].loc(ax);
         if loc == to { return; }
@@ -479,7 +485,6 @@ impl Matrix {
             self.diag[off_loc] = Some(ix);
         }
     }
-
     fn prev(&self, ax: Axis, idx: Eindex, hint: Option<Eindex>) -> Option<Eindex> {
         // Find the element previous to `idx` along axis `ax`. 
         // If provided, `hint` *must* be before `idx`, or search will fail. 
@@ -515,7 +520,6 @@ impl Matrix {
         }
         return Some(pi);
     }
-
     fn swap(&mut self, ax: Axis, a: usize, b: usize) {
         if a == b { return; }
         let x = min(a, b);
@@ -558,26 +562,31 @@ impl Matrix {
         self.axes[ax].swap(x, y);
     }
 
-    fn lu_factorize(&mut self) {
+    fn lu_factorize(&mut self) -> SpResult<()> {
         // Updates self to S = L + U - I.
         // Diagonal entries are those of U;
         // L has diagonal entries equal to one.
 
         assert(self.diag.len()).gt(0);
-        // FIXME: singularity check
+        for k in 0..self.axes[ROWS].hdrs.len() {
+            if self.hdr(ROWS, k).is_none() { return Err("Singular Matrix"); }
+        }
+        for k in 0..self.axes[COLS].hdrs.len() {
+            if self.hdr(COLS, k).is_none() { return Err("Singular Matrix"); }
+        }
         self.set_state(MatrixState::FACTORING);
 
         for n in 0..self.diag.len() - 1 {
             let pivot = match self.search_for_pivot(n) {
-                None => panic!("SAD!"), // FIXME: return result-like
+                None => return Err("Pivot Search Fail"),
                 Some(p) => p,
             };
-            // assert(pivot).ne(None);
             self.swap(ROWS, self[pivot].row, n);
             self.swap(COLS, self[pivot].col, n);
-            self.row_col_elim(pivot, n);
+            self.row_col_elim(pivot, n)?;
         }
         self.set_state(MatrixState::FACTORED);
+        return Ok(());
     }
 
     fn search_for_pivot(&self, n: usize) -> Option<Eindex> {
@@ -678,7 +687,7 @@ impl Matrix {
             };
 
             // Check whether this element meets our threshold criteria
-            let max_in_col = self.max_after(Axis::COLS, ei);
+            let max_in_col = self.max_after(COLS, ei);
             let threshold = REL_THRESHOLD * self[max_in_col].val.abs() + ABS_THRESHOLD;
 
             while let Some(ei) = e {
@@ -733,10 +742,10 @@ impl Matrix {
         return max_elem;
     }
 
-    fn row_col_elim(&mut self, pivot: Eindex, n: usize) {
+    fn row_col_elim(&mut self, pivot: Eindex, n: usize) -> SpResult<()> {
         let de = match self.diag[n] {
             Some(de) => de,
-            None => panic!("FAIL!"),
+            None => return Err("Singular Matrix"),
         };
         let pivot_val = self[pivot].val;
         assert(pivot_val).ne(0.0);
@@ -785,10 +794,11 @@ impl Matrix {
             self.axes[ROWS].markowitz[plower_row] -= 1;
             plower = self[ple].next_in_col;
         }
+        return Ok(());
     }
 
-    pub fn solve(&mut self, rhs: Vec<f64>) -> Vec<f64> {
-        if self.state == MatrixState::CREATED { self.lu_factorize(); }
+    pub fn solve(&mut self, rhs: Vec<f64>) -> SpResult<Vec<f64>> {
+        if self.state == MatrixState::CREATED { self.lu_factorize()?; }
         assert(self.state).eq(MatrixState::FACTORED);
 
         // Unwind any row-swaps
@@ -806,7 +816,7 @@ impl Matrix {
 
             let mut di = match self.diag[k] {
                 Some(di) => di,
-                None => panic!("FAIL!"),
+                None => return Err("Singular Matrix"),
             };
             let mut e = self[di].next_in_col;
             while let Some(ei) = e {
@@ -820,7 +830,7 @@ impl Matrix {
             // Walk each row, update c
             let mut di = match self.diag[k] {
                 Some(di) => di,
-                None => panic!("FAIL!"),
+                None => return Err("Singular Matrix"),
             };
             let mut e = self[di].next_in_row;
             while let Some(ei) = e {
@@ -835,7 +845,7 @@ impl Matrix {
         for k in 0..c.len() {
             soln[k] = c[self.axes[COLS].mapping.as_ref().unwrap().e2i[k]];
         }
-        return soln;
+        return Ok(soln);
     }
     fn swap_rows(&mut self, x: usize, y: usize) { self.swap(ROWS, x, y) }
     fn swap_cols(&mut self, x: usize, y: usize) { self.swap(COLS, x, y) }
@@ -879,6 +889,10 @@ impl Error for NonRealNumError {
     }
 }
 
+/// Sparse Matrix System
+///
+/// Represents a linear system of the form `Ax=b`
+///
 pub struct System {
     mat: Matrix,
     rhs: Vec<f64>,
@@ -889,12 +903,11 @@ pub struct System {
 use std::path::Path;
 
 impl System {
-    fn lu_factorize(&mut self) { self.mat.lu_factorize() }
+    fn lu_factorize(&mut self) -> SpResult<()> { self.mat.lu_factorize() }
     pub fn split(mut self) -> (Matrix, Vec<f64>) { (self.mat, self.rhs) }
-    pub fn solve(mut self) -> Vec<f64> {
-        self.mat.solve(self.rhs)
-    }
+    pub fn solve(mut self) -> SpResult<Vec<f64>> { self.mat.solve(self.rhs) }
 
+    /// Read a sparse21::System from file
     pub fn from_file(filename: &Path) -> Result<System, Box<dyn Error>> {
         use std::fs::File;
         use std::io::BufReader;
@@ -989,6 +1002,8 @@ impl<T: PartialOrd> Assert<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type TestResult = Result<(), &'static str>;
 
     fn checkups(m: &Matrix) {
         // Internal consistency tests.  Probably pretty slow.
@@ -1263,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lu_id3() {
+    fn test_lu_id3() -> TestResult {
         let mut m = Matrix::identity(3);
         checkups(&m);
 
@@ -1273,6 +1288,7 @@ mod tests {
         assert_eq!(m.get(0, 0).unwrap(), 1.0);
         assert_eq!(m.get(1, 1).unwrap(), 1.0);
         assert_eq!(m.get(2, 2).unwrap(), 1.0);
+        return Ok(());
     }
 
     #[test]
@@ -1337,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn test_solve() {
+    fn test_solve() -> TestResult {
         let mut m = Matrix::from_entries(vec![
             (0, 0, 1.0),
             (0, 1, 1.0),
@@ -1353,31 +1369,34 @@ mod tests {
         checkups(&m);
 
         let rhs = vec![6.0, -4.0, 27.0];
-        let soln = m.solve(rhs);
+        let soln = m.solve(rhs)?;
         let correct = vec![5.0, 3.0, -2.0];
         for k in 0..soln.len() {
             assert!(isclose(soln[k], correct[k]));
         }
+        Ok(())
     }
 
     #[test]
-    fn test_solve_id3() {
+    fn test_solve_id3() -> TestResult {
         let mut m = Matrix::identity(3);
-        let soln = m.solve(vec![11.1, 30.3, 99.9]);
+        let soln = m.solve(vec![11.1, 30.3, 99.9])?;
         assert_eq!(soln, vec![11.1, 30.3, 99.9]);
+        return Ok(());
     }
 
     #[test]
-    fn test_solve_identity() {
+    fn test_solve_identity() -> TestResult {
         /// Test that solutions of Ix=b yield x=b
         for s in 1..10 {
             let mut m = Matrix::identity(s);
             let mut rhs: Vec<f64> = vec![];
             for e in 0..s { rhs.push(e as f64); }
 
-            let soln = m.solve(rhs.clone());
+            let soln = m.solve(rhs.clone())?;
             assert_eq!(soln, rhs);
         }
+        return Ok(());
     }
 
     fn assert_entries(m: &Matrix, entries: Vec<Entry>) {

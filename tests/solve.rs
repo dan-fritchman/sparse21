@@ -16,7 +16,7 @@ fn solve() -> Result<(), Box<dyn Error>> {
     let (mut mat, rhs) = s.split();
 
     println!("Solving");
-    let res = mat.solve(rhs);
+    let res = mat.solve(rhs)?;
     println!("Result: {:?}", res);
 
     return Ok(());
@@ -25,3 +25,4 @@ fn solve() -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     return solve();
 }
+

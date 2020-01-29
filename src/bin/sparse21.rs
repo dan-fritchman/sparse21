@@ -10,7 +10,7 @@ fn solve(p: &Path) -> Result<(), Box<dyn Error>> {
     let s = System::from_file(p)?;
 
     println!("Solving");
-    let res = s.solve();
+    let res = s.solve()?;
     println!("Result: {:?}", res);
 
     return Ok(());
