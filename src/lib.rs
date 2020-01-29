@@ -373,10 +373,10 @@ impl Matrix {
     }
 
     fn move_element(&mut self, ax: Axis, idx: Eindex, to: usize) {
-        let loc = self.eindex(idx).loc(ax);
+        let loc = self[idx].loc(ax);
         if loc == to { return; }
         let off_ax = ax.other();
-        let y = self.eindex(idx).loc(off_ax);
+        let y = self[idx].loc(off_ax);
 
         if loc < to {
             let br = match self.before_loc(off_ax, y, to, Some(idx)) {
@@ -385,13 +385,14 @@ impl Matrix {
             };
             if br != idx {
                 let be = self.prev(off_ax, idx, None);
-                let nxt = self.next(off_ax, idx);
+                let nxt = self[idx].next(off_ax);
                 match be {
                     None => self.set_hdr(off_ax, y, nxt),
                     Some(be) => self[be].set_next(off_ax, nxt),
                 };
-                self.set_next(off_ax, idx, self.next(off_ax, br));
-                self.set_next(off_ax, br, Some(idx));
+                let brn = self[br].next(off_ax);
+                self[idx].set_next(off_ax, brn);
+                self[br].set_next(off_ax, Some(idx));
             }
         } else {
             let br = self.before_loc(off_ax, y, to, None);
@@ -399,7 +400,7 @@ impl Matrix {
 
             if br != be { // We (may) need some pointer updates
                 if let Some(ei) = be {
-                    let nxt = self.next(off_ax, idx);
+                    let nxt = self[idx].next(off_ax);
                     self[ei].set_next(off_ax, nxt);
                 }
                 match br {
@@ -410,7 +411,7 @@ impl Matrix {
                     }
                     Some(br) => {
                         if br != idx { // Splice `idx` in after `br`
-                            let nxt = self.next(off_ax, br);
+                            let nxt = self[br].next(off_ax);
                             self[idx].set_next(off_ax, nxt);
                             self[br].set_next(off_ax, Some(idx));
                         }
@@ -435,7 +436,7 @@ impl Matrix {
         // E.g. exchange_elements(Axis.rows, ex, ey) exchanges the rows of ex and ey.
 
         let off_ax = ax.other();
-        let off_loc = self.eindex(ix).loc(off_ax);
+        let off_loc = self[ix].loc(off_ax);
 
         let bx = self.prev(off_ax, ix, None);
         let by = match self.prev(off_ax, iy, Some(ix)) {
@@ -443,8 +444,8 @@ impl Matrix {
             None => panic!("ERROR!"),
         };
 
-        let locx = self.eindex(ix).loc(ax);
-        let locy = self.eindex(iy).loc(ax);
+        let locx = self[ix].loc(ax);
+        let locy = self[iy].loc(ax);
         self[iy].set_loc(ax, locx);
         self[ix].set_loc(ax, locy);
 
@@ -464,8 +465,8 @@ impl Matrix {
             self[iy].set_next(off_ax, Some(ix));
             self[ix].set_next(off_ax, tmp);
         } else { // Elements in-between `ex` and `ey`.  Update the last one.
-            let xnxt = self.eindex(ix).next(off_ax);
-            let ynxt = self.eindex(iy).next(off_ax);
+            let xnxt = self[ix].next(off_ax);
+            let ynxt = self[iy].next(off_ax);
             self[iy].set_next(off_ax, xnxt);
             self[ix].set_next(off_ax, ynxt);
             self[by].set_next(off_ax, Some(ix));
@@ -528,8 +529,8 @@ impl Matrix {
         loop {
             match (ix, iy) {
                 (Some(ex), Some(ey)) => {
-                    let ox = self.eindex(ex).loc(off_ax);
-                    let oy = self.eindex(ey).loc(off_ax);
+                    let ox = self[ex].loc(off_ax);
+                    let oy = self[ey].loc(off_ax);
                     if ox < oy {
                         self.move_element(ax, ex, y);
                         ix = self[ex].next(ax);
@@ -737,11 +738,11 @@ impl Matrix {
             Some(de) => de,
             None => panic!("FAIL!"),
         };
-        let pivot_val = self.eindex(pivot).val;
+        let pivot_val = self[pivot].val;
         assert(pivot_val).ne(0.0);
 
         // Divide elements in the pivot column by the pivot-value
-        let mut plower = self.eindex(pivot).next_in_col;
+        let mut plower = self[pivot].next_in_col;
         while let Some(ple) = plower {
             self[ple].val /= pivot_val;
             plower = self[ple].next_in_col;
@@ -749,40 +750,40 @@ impl Matrix {
 
         let mut pupper = self[pivot].next_in_row;
         while let Some(pue) = pupper {
-            let pupper_col = self.eindex(pue).col;
-            plower = self.eindex(pivot).next_in_col;
-            let mut psub = self.eindex(pue).next_in_col;
+            let pupper_col = self[pue].col;
+            plower = self[pivot].next_in_col;
+            let mut psub = self[pue].next_in_col;
             while let Some(ple) = plower {
 
                 // Walk `psub` down to the lower pointer
                 while let Some(pse) = psub {
-                    if self.eindex(pse).row >= self.eindex(ple).row { break; }
-                    psub = self.eindex(pse).next_in_col;
+                    if self[pse].row >= self[ple].row { break; }
+                    psub = self[pse].next_in_col;
                 }
                 let pse = match psub {
-                    None => self.add_fillin(self.eindex(ple).row, pupper_col),
+                    None => self.add_fillin(self[ple].row, pupper_col),
                     Some(pse) if self[pse].row > self[ple].row => {
-                        self.add_fillin(self.eindex(ple).row, pupper_col)
+                        self.add_fillin(self[ple].row, pupper_col)
                     }
                     Some(pse) => pse,
                 };
 
                 // Update the `psub` element value
-                self[pse].val -= self.eindex(pue).val * self.eindex(ple).val;
-                psub = self.eindex(pse).next_in_col;
-                plower = self.eindex(ple).next_in_col;
+                self[pse].val -= self[pue].val * self[ple].val;
+                psub = self[pse].next_in_col;
+                plower = self[ple].next_in_col;
             }
             self.axes[COLS].markowitz[pupper_col] -= 1;
-            pupper = self.eindex(pue).next_in_row;
+            pupper = self[pue].next_in_row;
         }
         // Update remaining Markowitz counts
         self.axes[ROWS].markowitz[n] -= 1;
         self.axes[COLS].markowitz[n] -= 1;
-        plower = self.eindex(pivot).next_in_col;
+        plower = self[pivot].next_in_col;
         while let Some(ple) = plower {
-            let plower_row = self.eindex(ple).row;
+            let plower_row = self[ple].row;
             self.axes[ROWS].markowitz[plower_row] -= 1;
-            plower = self.eindex(ple).next_in_col;
+            plower = self[ple].next_in_col;
         }
     }
 
@@ -836,13 +837,8 @@ impl Matrix {
         }
         return soln;
     }
-
-    fn eindex(&self, idx: Eindex) -> &Element { &self[idx] }
-    fn next(&self, ax: Axis, idx: Eindex) -> Option<Eindex> { self[idx].next(ax) }
-    fn set_next(&mut self, ax: Axis, idx: Eindex, to: Option<Eindex>) { self[idx].set_next(ax, to) }
-
-    fn swap_rows(&mut self, x: usize, y: usize) { self.swap(Axis::ROWS, x, y) }
-    fn swap_cols(&mut self, x: usize, y: usize) { self.swap(Axis::COLS, x, y) }
+    fn swap_rows(&mut self, x: usize, y: usize) { self.swap(ROWS, x, y) }
+    fn swap_cols(&mut self, x: usize, y: usize) { self.swap(COLS, x, y) }
 }
 
 impl Index<Eindex> for Matrix {
@@ -1005,17 +1001,15 @@ mod tests {
         for n in 0..m.axes[COLS].hdrs.len() {
             let mut ep = m.hdr(COLS, n);
             while let Some(ei) = ep {
-                assert(m.eindex(ei).col).eq(n);
+                assert(m[ei].col).eq(n);
 
-                // let mut nxt = m.eindex(ei).next_in_col;
                 if let Some(nxt) = m[ei].next_in_col {
-                    assert(m.eindex(nxt).row).gt(m.eindex(ei).row);
+                    assert(m[nxt].row).gt(m[ei].row);
                     assert!(!next_in_cols.contains(&nxt));
                     next_in_cols.push(nxt);
                 }
-                // nxt = m.eindex(ei).next_in_row;
                 if let Some(nxt) = m[ei].next_in_row {
-                    assert(m.eindex(nxt).col).gt(m.eindex(ei).col);
+                    assert(m[nxt].col).gt(m[ei].col);
                     assert!(!next_in_rows.contains(&nxt));
                     next_in_rows.push(nxt);
                 }
