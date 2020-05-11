@@ -3,7 +3,7 @@ name = "sparse21"
 description = "Sparse Matrix Solver"
 readme = "readme.md"
 license = "BSD-3-Clause"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Dan Fritchman <dan@fritch.mn>"]
 edition = "2018"
 
