@@ -307,14 +307,10 @@ impl Matrix {
         }
         return Ok(y);
     }
-    pub fn res(&self, x: &Vec<f64>, rhs:&Vec<f64>) -> SpResult<Vec<f64>> {
-        
-
-
+    pub fn res(&self, x: &Vec<f64>, rhs: &Vec<f64>) -> SpResult<Vec<f64>> {
         println!("X:");
         println!("{:?}", x);
 
-        
         let mut xi: Vec<f64> = vec![0.0; self.num_cols()];
         if self.state == MatrixState::FACTORED {
             // If we have factored, unwind any column-swaps
